@@ -1,0 +1,38 @@
+# ================ 构建产物 ================
+backend/target/
+backend/*.class
+backend/*.jar
+backend/*.war
+backend/*.iml
+
+frontend/dist/
+frontend/.vite/
+
+# ================ 依赖目录 ================
+frontend/node_modules/
+backend/.idea/
+
+# ================ IDE 配置 ================
+.idea/
+*.iml
+*.iws
+*.ipr
+.trae/
+
+# ================ 系统文件 ================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# ================ 日志 ================
+*.log
+backend/logs/
+
+# ================ Maven 锁 ================
+.locks/
+
+# ================ 临时文件 ================
+*.tmp
+*.bak
+*.swp
+*~
