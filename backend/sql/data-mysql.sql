@@ -14,6 +14,7 @@ SET @now     = NOW();
 SET @minus7d = DATE_SUB(@now, INTERVAL 7 DAY);
 SET @minus2d = DATE_SUB(@now, INTERVAL 2 DAY);
 SET @minus1d = DATE_SUB(@now, INTERVAL 1 DAY);
+SET @plus1d  = DATE_ADD(@now, INTERVAL 1 DAY);
 SET @plus2d  = DATE_ADD(@now, INTERVAL 2 DAY);
 SET @plus3d  = DATE_ADD(@now, INTERVAL 3 DAY);
 SET @plus4d  = DATE_ADD(@now, INTERVAL 4 DAY);
