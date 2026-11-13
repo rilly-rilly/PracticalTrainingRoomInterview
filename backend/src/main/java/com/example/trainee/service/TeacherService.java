@@ -261,6 +261,8 @@ public class TeacherService {
         m.put("status", it.getStatus() != null ? it.getStatus().name() : null);
         m.put("waitlistRank", it.getWaitlistRank());
         m.put("submitTime", ldtToMs(it.getSubmitTime()));
+        m.put("acceptInnerAdjust", it.getAcceptInnerAdjust());
+        m.put("acceptGlobalAdjust", it.getAcceptGlobalAdjust());
 
         // 学生
         Student s = studentMapper.selectById(it.getStudentId());
@@ -271,6 +273,11 @@ public class TeacherService {
             studentMap.put("name", s.getName());
             studentMap.put("major", s.getMajor());
             studentMap.put("grade", s.getGrade());
+            // 扁平字段，前端直接访问
+            m.put("studentName", s.getName());
+            m.put("studentNo", s.getStudentNo());
+            m.put("major", s.getMajor());
+            m.put("grade", s.getGrade());
         } else {
             studentMap.put("id", it.getStudentId());
         }
@@ -285,6 +292,7 @@ public class TeacherService {
         roomMap.put("quota", room != null ? room.getQuota() : 0);
         roomMap.put("used", used);
         m.put("room", roomMap);
+        m.put("roomName", room != null ? room.getName() : it.getRoomNameSnapshot());
 
         // 面试
         Interview iv = interviewMapper.findByIntention(it.getId());

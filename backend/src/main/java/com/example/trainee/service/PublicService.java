@@ -12,12 +12,15 @@ import com.example.trainee.mapper.ScheduleItemMapper;
 import com.example.trainee.mapper.StudentMapper;
 import com.example.trainee.mapper.TeacherMapper;
 import com.example.trainee.mapper.TrainingRoomMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +38,7 @@ public class PublicService {
     private final TrainingRoomMapper roomMapper;
     private final TeacherMapper teacherMapper;
     private final StudentMapper studentMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** 首页聚合数据 */
     public Map<String, Object> home() {
@@ -48,7 +52,7 @@ public class PublicService {
         for (var item : items) {
             Map<String, Object> m = new HashMap<>();
             m.put("id", item.getId());
-            m.put("stepNo", item.getStepNo());
+            m.put("step", item.getStepNo());
             m.put("key", item.getKeyValue());
             m.put("title", item.getTitle());
             m.put("startAt", toEpochMilli(item.getStartTime()));
@@ -65,7 +69,7 @@ public class PublicService {
             m.put("state", state);
             schedules.add(m);
         }
-        result.put("schedules", schedules);
+        result.put("steps", schedules);
 
         // 2) notices
         List<Map<String, Object>> notices = new ArrayList<>();
@@ -77,7 +81,7 @@ public class PublicService {
             m.put("title", n.getTitle());
             m.put("content", n.getContent());
             m.put("level", n.getLevel());
-            m.put("publishTime", toEpochMilli(n.getPublishTime()));
+            m.put("publishedAt", toEpochMilli(n.getPublishTime()));
             notices.add(m);
         }
         result.put("notices", notices);
@@ -132,9 +136,9 @@ public class PublicService {
         result.put("direction", room.getDirection());
         result.put("quota", room.getQuota());
         result.put("remaining", remaining);
-        result.put("trainingPlan", room.getTrainingPlan());
-        result.put("assessmentRequirement", room.getAssessmentRequirement());
-        result.put("tags", room.getTags());
+        result.put("training", room.getTrainingPlan());
+        result.put("assessment", room.getAssessmentRequirement());
+        result.put("tags", parseTags(room.getTags()));
         result.put("description", room.getDescription());
         result.put("teachers", teachers);
         return result;
@@ -203,7 +207,10 @@ public class PublicService {
         m.put("direction", room.getDirection());
         m.put("quota", room.getQuota());
         m.put("remaining", remaining);
-        m.put("tags", room.getTags());
+        m.put("tags", parseTags(room.getTags()));
+        m.put("training", room.getTrainingPlan());
+        m.put("assessment", room.getAssessmentRequirement());
+        m.put("description", room.getDescription());
         return m;
     }
 
@@ -242,5 +249,18 @@ public class PublicService {
     private Long toEpochMilli(LocalDateTime ldt) {
         if (ldt == null) return null;
         return ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    }
+
+    /**
+     * 数据库 tags 存的是 JSON 字符串（H2 VARCHAR 或 MySQL JSON），
+     * 前端期望 List<String>。解析失败返回空列表。
+     */
+    private List<String> parseTags(String tagsJson) {
+        if (tagsJson == null || tagsJson.isBlank()) return Collections.emptyList();
+        try {
+            return objectMapper.readValue(tagsJson, new TypeReference<>() {});
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
     }
 }

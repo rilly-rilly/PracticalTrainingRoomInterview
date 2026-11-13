@@ -3,7 +3,7 @@ import { getToken, clearAuth } from '../auth'
 import { pushToast } from '../utils/toast'
 
 // 切换开关：true=mock 模式（不走真实后端），false=真实 Spring Boot 后端
-export const USE_MOCK = true
+export const USE_MOCK = false
 
 const instance = axios.create({
   baseURL: '',

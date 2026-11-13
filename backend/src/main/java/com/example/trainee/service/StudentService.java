@@ -179,6 +179,7 @@ public class StudentService {
         boolean hasWaitlist = raw.stream().anyMatch(i -> i.getStatus() == IntentionStatus.递补);
 
         Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("total", intentions.size());
         summary.put("totalIntentions", intentions.size());
         summary.put("admits", admits);
         summary.put("confirmed", confirmed);
@@ -186,6 +187,10 @@ public class StudentService {
         summary.put("autoConfirmed", autoConfirmed);
         summary.put("confirmedIntentionId", confirmedIntentionId);
         summary.put("hasWaitlist", hasWaitlist);
+        summary.put("waitlistRank", raw.stream()
+                .filter(i -> i.getStatus() == IntentionStatus.递补 && i.getWaitlistRank() != null)
+                .map(Intention::getWaitlistRank)
+                .collect(Collectors.toList()));
         summary.put("acceptInnerAdjust", acceptInner);
         summary.put("acceptGlobalAdjust", acceptGlobal);
 
@@ -208,18 +213,7 @@ public class StudentService {
 
         // adjustments
         List<AdjustmentRecord> adjustments = adjustmentRecordMapper.listByStudent(userId);
-        List<Map<String, Object>> adjustmentsView = adjustments.stream().map(a -> {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", a.getId());
-            m.put("round", a.getRound());
-            m.put("type", a.getType() != null ? a.getType().name() : null);
-            m.put("fromRoom", a.getFromRoomSnapshot());
-            m.put("toRoom", a.getToRoomSnapshot());
-            m.put("toTeacher", a.getToTeacherSnapshot());
-            m.put("result", a.getResultSnapshot());
-            m.put("createTime", toEpochMilli(a.getCreateTime()));
-            return m;
-        }).collect(Collectors.toList());
+        List<Map<String, Object>> adjustmentsView = adjustments.stream().map(this::adjustmentRecordToMap).collect(Collectors.toList());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("intentions", intentions);
@@ -435,18 +429,7 @@ public class StudentService {
 
         // adjustments
         List<AdjustmentRecord> adjustments = adjustmentRecordMapper.listByStudent(userId);
-        List<Map<String, Object>> adjustmentsView = adjustments.stream().map(a -> {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", a.getId());
-            m.put("round", a.getRound());
-            m.put("type", a.getType() != null ? a.getType().name() : null);
-            m.put("fromRoom", a.getFromRoomSnapshot());
-            m.put("toRoom", a.getToRoomSnapshot());
-            m.put("toTeacher", a.getToTeacherSnapshot());
-            m.put("result", a.getResultSnapshot());
-            m.put("createTime", toEpochMilli(a.getCreateTime()));
-            return m;
-        }).collect(Collectors.toList());
+        List<Map<String, Object>> adjustmentsView = adjustments.stream().map(this::adjustmentRecordToMap).collect(Collectors.toList());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("stage", stage);
@@ -578,5 +561,27 @@ public class StudentService {
         log.setDetail(detail);
         log.setCreateTime(now());
         operationLogMapper.insert(log);
+    }
+
+    /** AdjustmentRecord -> 前端期望的 Map（统一字段名，status 和 adjustments 共用） */
+    private Map<String, Object> adjustmentRecordToMap(AdjustmentRecord a) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", a.getId());
+        m.put("round", a.getRound());
+        String typeName = a.getType() != null ? a.getType().name() : null;
+        m.put("type", typeName);
+        m.put("typeLabel", switch (typeName) {
+            case "inner" -> "实训室内部调剂";
+            case "global" -> "全院跨实训室调剂";
+            case "supplement" -> "分轮补录";
+            case "interview" -> "约谈";
+            default -> typeName;
+        });
+        m.put("fromRoomName", a.getFromRoomSnapshot());
+        m.put("toRoomName", a.getToRoomSnapshot());
+        m.put("toTeacherName", a.getToTeacherSnapshot());
+        m.put("result", a.getResultSnapshot());
+        m.put("createdAt", toEpochMilli(a.getCreateTime()));
+        return m;
     }
 }

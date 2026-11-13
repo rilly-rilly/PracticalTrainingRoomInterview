@@ -45,6 +45,20 @@ public class TokenInterceptor implements HandlerInterceptor {
             return false;
         }
         AuthContext.set(new LoginUser(session.getRole(), session.getUserId(), token));
+
+        // 路径级角色守卫：学生/导师/管理员接口互不越权
+        String path = request.getRequestURI();
+        String role = session.getRole();
+        boolean forbidden = (path.startsWith("/api/student/") && !"student".equals(role))
+                || (path.startsWith("/api/teacher/") && !"teacher".equals(role))
+                || (path.startsWith("/api/admin/") && !"admin".equals(role));
+        if (forbidden) {
+            AuthContext.clear();
+            response.setStatus(403);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write("{\"code\":403,\"message\":\"无权访问该接口\",\"data\":null}");
+            return false;
+        }
         return true;
     }
 

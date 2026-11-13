@@ -37,8 +37,10 @@ public class StudentController {
      */
     @PostMapping("/intentions")
     public ApiResponse<List<Map<String, Object>>> submitIntentions(@RequestBody Map<String, Object> body) {
-        @SuppressWarnings("unchecked")
-        List<Long> choices = (List<Long>) body.get("choices");
+        // JSON 小整数会被 Jackson 解析为 Integer，这里统一转 Long，避免 ClassCastException
+        List<?> rawChoices = (List<?>) body.get("choices");
+        List<Long> choices = rawChoices == null ? null
+                : rawChoices.stream().map(o -> o == null ? null : Long.valueOf(o.toString())).toList();
         String intro = (String) body.get("intro");
         Object innerObj = body.get("acceptInnerAdjust");
         Object globalObj = body.get("acceptGlobalAdjust");
