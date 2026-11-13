@@ -35,6 +35,7 @@ public class StudentService {
     private final OperationLogMapper operationLogMapper;
     private final AdjustmentRecordMapper adjustmentRecordMapper;
     private final PublicityResultMapper publicityResultMapper;
+    private final IntentionDecorator decorator;
 
     // ---------- 时间工具 ----------
 
@@ -53,7 +54,7 @@ public class StudentService {
     public List<Map<String, Object>> listMyIntentions() {
         Long userId = TokenInterceptor.AuthContext.get().getUserId();
         List<Intention> list = intentionMapper.listByStudent(userId);
-        return list.stream().map(this::decorateIntention).collect(Collectors.toList());
+        return list.stream().map(decorator::decorate).collect(Collectors.toList());
     }
 
     // ================================================================
@@ -356,7 +357,7 @@ public class StudentService {
         Long userId = loginUser.getUserId();
 
         List<Intention> raw = intentionMapper.listByStudent(userId);
-        List<Map<String, Object>> intentions = raw.stream().map(this::decorateIntention).collect(Collectors.toList());
+        List<Map<String, Object>> intentions = raw.stream().map(decorator::decorate).collect(Collectors.toList());
 
         // 找到已确认或已录取的目标意向
         Intention targetIntention = raw.stream()
@@ -434,7 +435,7 @@ public class StudentService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("stage", stage);
         result.put("finalStatus", finalStatus);
-        result.put("intention", targetIntention != null ? decorateIntention(targetIntention) : null);
+        result.put("intention", targetIntention != null ? decorator.decorate(targetIntention) : null);
         result.put("publicity", publicityView);
         result.put("intentions", intentions);
         result.put("adjustments", adjustmentsView);
@@ -442,63 +443,7 @@ public class StudentService {
     }
 
     // ================================================================
-    // 7. decorateIntention
-    // ================================================================
-
-    public Map<String, Object> decorateIntention(Intention it) {
-        Map<String, Object> m = new LinkedHashMap<>();
-
-        // student info
-        Student s = it.getStudentId() != null ? studentMapper.selectById(it.getStudentId()) : null;
-        m.put("id", it.getId());
-        m.put("studentId", it.getStudentId());
-        m.put("studentNo", s != null ? s.getStudentNo() : null);
-        m.put("studentName", s != null ? s.getName() : null);
-        m.put("major", s != null ? s.getMajor() : null);
-        m.put("grade", s != null ? s.getGrade() : null);
-
-        // teacher info (优先用快照)
-        m.put("teacherId", it.getTeacherId());
-        m.put("teacherNo", it.getTeacherNoSnapshot());
-        m.put("teacherName", it.getTeacherNameSnapshot());
-
-        // room info
-        m.put("roomId", it.getRoomId());
-        m.put("roomName", it.getRoomNameSnapshot());
-        TrainingRoom room = it.getRoomId() != null ? trainingRoomMapper.selectById(it.getRoomId()) : null;
-        m.put("roomQuota", room != null ? room.getQuota() : null);
-        m.put("roomUsed", it.getRoomId() != null ? trainingRoomMapper.countOccupied(it.getRoomId()) : 0);
-
-        m.put("priority", it.getPriority());
-        m.put("status", it.getStatus() != null ? it.getStatus().name() : null);
-        m.put("intro", it.getIntro());
-        m.put("acceptInnerAdjust", it.getAcceptInnerAdjust() != null && it.getAcceptInnerAdjust() == 1);
-        m.put("acceptGlobalAdjust", it.getAcceptGlobalAdjust() != null && it.getAcceptGlobalAdjust() == 1);
-        m.put("submittedAt", toEpochMilli(it.getSubmitTime()));
-        m.put("round", it.getRound());
-        m.put("rank", it.getWaitlistRank());
-
-        // interview
-        Interview iv = interviewMapper.findByIntention(it.getId());
-        if (iv != null) {
-            Map<String, Object> ivM = new LinkedHashMap<>();
-            ivM.put("attitude", iv.getAttitudeScore());
-            ivM.put("logic", iv.getLogicScore());
-            ivM.put("coding", iv.getCodingScore());
-            ivM.put("commitment", iv.getCommitmentScore());
-            ivM.put("total", iv.getTotal());
-            ivM.put("comment", iv.getComment());
-            ivM.put("createdAt", toEpochMilli(iv.getCreateTime()));
-            m.put("interview", ivM);
-        } else {
-            m.put("interview", null);
-        }
-
-        return m;
-    }
-
-    // ================================================================
-    // 8. windowOf
+    // 7. windowOf
     // ================================================================
 
     public Map<String, Object> windowOf(String key) {

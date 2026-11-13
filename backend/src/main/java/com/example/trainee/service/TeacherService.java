@@ -31,6 +31,7 @@ public class TeacherService {
     private final InterviewMapper interviewMapper;
     private final AdmissionConfirmationMapper confirmationMapper;
     private final OperationLogMapper operationLogMapper;
+    private final IntentionDecorator decorator;
 
     // ---------- 1. 报考列表 ----------
 
@@ -43,7 +44,7 @@ public class TeacherService {
 
         // 2) 装饰
         List<Map<String, Object>> applications = intentions.stream()
-                .map(this::decorateIntention)
+                .map(decorator::decorate)
                 .collect(Collectors.toList());
 
         // 3) 排序：interview.total 降序，同分时 studentNo 升序
@@ -55,8 +56,8 @@ public class TeacherService {
             int totalB = (ivB instanceof Map<?, ?> m && m.get("total") != null)
                     ? ((Number) m.get("total")).intValue() : 0;
             if (totalB != totalA) return totalB - totalA;
-            String noA = (String) ((Map<?, ?>) a.get("student")).get("studentNo");
-            String noB = (String) ((Map<?, ?>) b.get("student")).get("studentNo");
+            String noA = (String) a.get("studentNo");
+            String noB = (String) b.get("studentNo");
             return String.valueOf(noA).compareTo(String.valueOf(noB));
         });
 
@@ -110,7 +111,7 @@ public class TeacherService {
             throw new BizException(403, "无权查看该报考");
         }
 
-        return decorateIntention(it);
+        return decorator.decorate(it);
     }
 
     // ---------- 3. 提交面试 ----------
@@ -246,74 +247,6 @@ public class TeacherService {
 
     // ---------- 公共工具方法 ----------
 
-    /** 装饰意向：附带学生信息、实训室信息、面试评分 */
-    private Map<String, Object> decorateIntention(Intention it) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", it.getId());
-        m.put("teacherId", it.getTeacherId());
-        m.put("teacherNameSnapshot", it.getTeacherNameSnapshot());
-        m.put("teacherNoSnapshot", it.getTeacherNoSnapshot());
-        m.put("roomId", it.getRoomId());
-        m.put("roomNameSnapshot", it.getRoomNameSnapshot());
-        m.put("priority", it.getPriority());
-        m.put("intro", it.getIntro());
-        m.put("round", it.getRound());
-        m.put("status", it.getStatus() != null ? it.getStatus().name() : null);
-        m.put("waitlistRank", it.getWaitlistRank());
-        m.put("submitTime", ldtToMs(it.getSubmitTime()));
-        m.put("acceptInnerAdjust", it.getAcceptInnerAdjust());
-        m.put("acceptGlobalAdjust", it.getAcceptGlobalAdjust());
-
-        // 学生
-        Student s = studentMapper.selectById(it.getStudentId());
-        Map<String, Object> studentMap = new LinkedHashMap<>();
-        if (s != null) {
-            studentMap.put("id", s.getId());
-            studentMap.put("studentNo", s.getStudentNo());
-            studentMap.put("name", s.getName());
-            studentMap.put("major", s.getMajor());
-            studentMap.put("grade", s.getGrade());
-            // 扁平字段，前端直接访问
-            m.put("studentName", s.getName());
-            m.put("studentNo", s.getStudentNo());
-            m.put("major", s.getMajor());
-            m.put("grade", s.getGrade());
-        } else {
-            studentMap.put("id", it.getStudentId());
-        }
-        m.put("student", studentMap);
-
-        // 实训室信息（quota + used）
-        TrainingRoom room = trainingRoomMapper.selectById(it.getRoomId());
-        int used = trainingRoomMapper.countOccupied(it.getRoomId());
-        Map<String, Object> roomMap = new LinkedHashMap<>();
-        roomMap.put("id", it.getRoomId());
-        roomMap.put("name", room != null ? room.getName() : null);
-        roomMap.put("quota", room != null ? room.getQuota() : 0);
-        roomMap.put("used", used);
-        m.put("room", roomMap);
-        m.put("roomName", room != null ? room.getName() : it.getRoomNameSnapshot());
-
-        // 面试
-        Interview iv = interviewMapper.findByIntention(it.getId());
-        if (iv != null) {
-            Map<String, Object> ivMap = new LinkedHashMap<>();
-            ivMap.put("attitude", iv.getAttitudeScore());
-            ivMap.put("logic", iv.getLogicScore());
-            ivMap.put("coding", iv.getCodingScore());
-            ivMap.put("commitment", iv.getCommitmentScore());
-            ivMap.put("total", iv.getTotal());
-            ivMap.put("comment", iv.getComment());
-            ivMap.put("createdAt", ldtToMs(iv.getCreateTime()));
-            m.put("interview", ivMap);
-        } else {
-            m.put("interview", null);
-        }
-
-        m.put("window", windowOf("teacher_operation"));
-        return m;
-    }
-
     /** 若该学生只有一个拟录取，则自动确认该意向，返回是否发生了自动确认。 */
     private boolean autoConfirmIfSingle(Long studentId) {
         List<Intention> pendingConfirms = intentionMapper.selectList(
@@ -337,20 +270,7 @@ public class TeacherService {
         return false;
     }
 
-    /** 时间窗口占位信息（复用 StudentService 语义）。 */
-    private Map<String, Object> windowOf(String key) {
-        Map<String, Object> w = new HashMap<>();
-        w.put("key", key);
-        w.put("open", true);
-        w.put("reason", null);
-        return w;
-    }
-
     // ---------- 私有辅助 ----------
-
-    private long ldtToMs(LocalDateTime ldt) {
-        return ldt == null ? 0L : ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-    }
 
     private void validateScore(String field, Integer val) {
         if (val == null || val < 1 || val > 10) {

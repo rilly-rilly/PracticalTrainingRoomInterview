@@ -41,6 +41,7 @@ public class AdminService {
     private final NoticeMapper noticeMapper;
     private final OperationLogMapper operationLogMapper;
     private final ImportBatchMapper importBatchMapper;
+    private final IntentionDecorator decorator;
 
     // ---------- 时间工具 ----------
 
@@ -97,54 +98,6 @@ public class AdminService {
         m.put("startAt", toEpochMilli(item.getStartTime()));
         m.put("endAt", toEpochMilli(item.getEndTime()));
         m.put("isOpen", isOpen);
-        return m;
-    }
-
-    public Map<String, Object> decorateIntention(Intention it) {
-        Map<String, Object> m = new LinkedHashMap<>();
-
-        Student s = it.getStudentId() != null ? studentMapper.selectById(it.getStudentId()) : null;
-        m.put("id", it.getId());
-        m.put("studentId", it.getStudentId());
-        m.put("studentNo", s != null ? s.getStudentNo() : null);
-        m.put("studentName", s != null ? s.getName() : null);
-        m.put("major", s != null ? s.getMajor() : null);
-        m.put("grade", s != null ? s.getGrade() : null);
-
-        m.put("teacherId", it.getTeacherId());
-        m.put("teacherNo", it.getTeacherNoSnapshot());
-        m.put("teacherName", it.getTeacherNameSnapshot());
-
-        m.put("roomId", it.getRoomId());
-        m.put("roomName", it.getRoomNameSnapshot());
-        TrainingRoom room = it.getRoomId() != null ? trainingRoomMapper.selectById(it.getRoomId()) : null;
-        m.put("roomQuota", room != null ? room.getQuota() : null);
-        m.put("roomUsed", it.getRoomId() != null ? trainingRoomMapper.countOccupied(it.getRoomId()) : 0);
-
-        m.put("priority", it.getPriority());
-        m.put("status", it.getStatus() != null ? it.getStatus().name() : null);
-        m.put("intro", it.getIntro());
-        m.put("acceptInnerAdjust", it.getAcceptInnerAdjust() != null && it.getAcceptInnerAdjust() == 1);
-        m.put("acceptGlobalAdjust", it.getAcceptGlobalAdjust() != null && it.getAcceptGlobalAdjust() == 1);
-        m.put("submittedAt", toEpochMilli(it.getSubmitTime()));
-        m.put("round", it.getRound());
-        m.put("rank", it.getWaitlistRank());
-
-        Interview iv = interviewMapper.findByIntention(it.getId());
-        if (iv != null) {
-            Map<String, Object> ivM = new LinkedHashMap<>();
-            ivM.put("attitude", iv.getAttitudeScore());
-            ivM.put("logic", iv.getLogicScore());
-            ivM.put("coding", iv.getCodingScore());
-            ivM.put("commitment", iv.getCommitmentScore());
-            ivM.put("total", iv.getTotal());
-            ivM.put("comment", iv.getComment());
-            ivM.put("createdAt", toEpochMilli(iv.getCreateTime()));
-            m.put("interview", ivM);
-        } else {
-            m.put("interview", null);
-        }
-
         return m;
     }
 
@@ -422,7 +375,7 @@ public class AdminService {
             m.put("title", n.getTitle());
             m.put("content", n.getContent());
             m.put("level", n.getLevel());
-            m.put("publishTime", toEpochMilli(n.getPublishTime()));
+            m.put("publishedAt", toEpochMilli(n.getPublishTime()));
             return m;
         }).collect(Collectors.toList());
     }
@@ -448,7 +401,7 @@ public class AdminService {
         m.put("title", n.getTitle());
         m.put("content", n.getContent());
         m.put("level", n.getLevel());
-        m.put("publishTime", toEpochMilli(n.getPublishTime()));
+        m.put("publishedAt", toEpochMilli(n.getPublishTime()));
 
         LoginUser loginUser = TokenInterceptor.AuthContext.getOrNull();
         writeLog(
@@ -487,34 +440,40 @@ public class AdminService {
     // ================================================================
 
     public Map<String, Object> admissionsOverview() {
-        // rooms
+        // 一次查出全部数据，后续在内存里聚合
         List<TrainingRoom> rooms = trainingRoomMapper.selectList(null);
+        List<Teacher> teachers = teacherMapper.selectList(null);
+        // 构建 roomId -> name 映射，供 teachers 联查
+        Map<Long, String> roomNameMap = rooms.stream()
+                .collect(Collectors.toMap(TrainingRoom::getId, TrainingRoom::getName, (a, b) -> a));
+
+        List<Intention> allIntentions = intentionMapper.selectList(null);
+        // 按 roomId 分组
+        Map<Long, List<Intention>> byRoom = allIntentions.stream()
+                .collect(Collectors.groupingBy(Intention::getRoomId));
+        // 按 teacherId 分组
+        Map<Long, List<Intention>> byTeacher = allIntentions.stream()
+                .collect(Collectors.groupingBy(Intention::getTeacherId));
+
+        // -------- rooms --------
         List<Map<String, Object>> roomsView = rooms.stream().map(room -> {
+            List<Intention> list = byRoom.getOrDefault(room.getId(), Collections.emptyList());
+            long admitted = list.stream().filter(i -> i.getStatus() == IntentionStatus.拟录取).count();
+            long confirmed = list.stream().filter(i -> i.getStatus() == IntentionStatus.已确认).count();
+            long waitlist = list.stream().filter(i -> i.getStatus() == IntentionStatus.递补).count();
+            long enrolled = list.stream().filter(i -> i.getStatus() == IntentionStatus.已录取).count();
             int used = trainingRoomMapper.countOccupied(room.getId());
-            Long admitted = intentionMapper.selectCount(
-                    new LambdaQueryWrapper<Intention>()
-                            .eq(Intention::getRoomId, room.getId())
-                            .eq(Intention::getStatus, IntentionStatus.拟录取));
-            Long confirmed = intentionMapper.selectCount(
-                    new LambdaQueryWrapper<Intention>()
-                            .eq(Intention::getRoomId, room.getId())
-                            .eq(Intention::getStatus, IntentionStatus.已确认));
-            Long waitlist = intentionMapper.selectCount(
-                    new LambdaQueryWrapper<Intention>()
-                            .eq(Intention::getRoomId, room.getId())
-                            .eq(Intention::getStatus, IntentionStatus.递补));
-            Long enrolled = intentionMapper.selectCount(
-                    new LambdaQueryWrapper<Intention>()
-                            .eq(Intention::getRoomId, room.getId())
-                            .eq(Intention::getStatus, IntentionStatus.已录取));
 
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", room.getId());
-            m.put("roomCode", room.getRoomCode());
             m.put("name", room.getName());
+            m.put("code", room.getRoomCode());           // mock 用 code
+            m.put("roomCode", room.getRoomCode());       // 兼容已有的 roomCode 引用
             m.put("direction", room.getDirection());
             m.put("quota", room.getQuota());
-            m.put("countOccupied", used);
+            m.put("used", used);                         // mock 用 used
+            m.put("countOccupied", used);                // 兼容
+            m.put("remaining", Math.max(0, room.getQuota() - used)); // mock 有 remaining
             m.put("admitted", admitted);
             m.put("confirmed", confirmed);
             m.put("waitlist", waitlist);
@@ -522,20 +481,17 @@ public class AdminService {
             return m;
         }).collect(Collectors.toList());
 
-        // teachers
-        List<Teacher> teachers = teacherMapper.selectList(null);
+        // -------- teachers --------
         List<Map<String, Object>> teachersView = teachers.stream().map(t -> {
-            Long applied = intentionMapper.selectCount(
-                    new LambdaQueryWrapper<Intention>()
-                            .eq(Intention::getTeacherId, t.getId()));
-            Long admitted = intentionMapper.selectCount(
-                    new LambdaQueryWrapper<Intention>()
-                            .eq(Intention::getTeacherId, t.getId())
-                            .eq(Intention::getStatus, IntentionStatus.拟录取));
-            Long waitlist = intentionMapper.selectCount(
-                    new LambdaQueryWrapper<Intention>()
-                            .eq(Intention::getTeacherId, t.getId())
-                            .eq(Intention::getStatus, IntentionStatus.递补));
+            List<Intention> list = byTeacher.getOrDefault(t.getId(), Collections.emptyList());
+            long applied = list.size();
+            long admitted = list.stream().filter(i ->
+                    i.getStatus() == IntentionStatus.拟录取
+                            || i.getStatus() == IntentionStatus.已确认
+                            || i.getStatus() == IntentionStatus.已录取).count();
+            long waitlist = list.stream().filter(i -> i.getStatus() == IntentionStatus.递补).count();
+
+            String roomName = t.getRoomId() != null ? roomNameMap.getOrDefault(t.getRoomId(), "") : "";
 
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", t.getId());
@@ -543,32 +499,57 @@ public class AdminService {
             m.put("name", t.getName());
             m.put("title", t.getTitle());
             m.put("roomId", t.getRoomId());
+            m.put("roomName", roomName);                  // mock 有 roomName
             m.put("applied", applied);
             m.put("admitted", admitted);
             m.put("waitlist", waitlist);
             return m;
         }).collect(Collectors.toList());
 
-        // intentions 装饰
-        List<Intention> allIntentions = intentionMapper.selectList(null);
+        // -------- intentions 装饰 --------
         List<Map<String, Object>> intentionsView = allIntentions.stream()
-                .map(this::decorateIntention)
+                .map(decorator::decorate)
                 .collect(Collectors.toList());
 
-        // stats
+        // -------- stats：扁平字段 + 保留 statusCounts --------
         long studentsTotal = studentMapper.selectCount(null);
         long teachersTotal = teacherMapper.selectCount(null);
         long intentionsTotal = allIntentions.size();
+
+        long pending = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.待面试).count();
+        long scored  = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.面试完成).count();
+        long admittedFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.拟录取).count();
+        long waitlistFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.递补).count();
+        long confirmedFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.已确认).count();
+        long enrolledFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.已录取).count();
+        long rejected = allIntentions.stream().filter(i ->
+                i.getStatus() == IntentionStatus.未录取 || i.getStatus() == IntentionStatus.已放弃).count();
+
+        // 保留 statusCounts（中文 key）给可能的其他消费者
         Map<String, Long> statusCounts = new LinkedHashMap<>();
         for (IntentionStatus s : IntentionStatus.values()) {
             long cnt = allIntentions.stream().filter(i -> i.getStatus() == s).count();
             statusCounts.put(s.name(), cnt);
         }
 
-        // confirm window
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("students", studentsTotal);
+        stats.put("teachers", teachersTotal);
+        stats.put("intentions", intentionsTotal);
+        // 前端 Admissions.vue statItems 直接取这些扁平字段
+        stats.put("pending", pending);
+        stats.put("scored", scored);
+        stats.put("admitted", admittedFlat);
+        stats.put("waitlist", waitlistFlat);
+        stats.put("confirmed", confirmedFlat);
+        stats.put("enrolled", enrolledFlat);
+        stats.put("rejected", rejected);
+        stats.put("statusCounts", statusCounts);  // 兼容保留
+
+        // -------- confirm window --------
         Map<String, Object> confirmWindow = windowOf("confirm");
 
-        // logs 最新 30
+        // -------- logs 最新 30 --------
         List<OperationLog> logs = operationLogMapper.selectList(null);
         logs.sort((a, b) -> {
             if (a.getCreateTime() == null && b.getCreateTime() == null) return 0;
@@ -587,12 +568,6 @@ public class AdminService {
             m.put("createTime", toEpochMilli(l.getCreateTime()));
             return m;
         }).collect(Collectors.toList());
-
-        Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("students", studentsTotal);
-        stats.put("teachers", teachersTotal);
-        stats.put("intentions", intentionsTotal);
-        stats.put("statusCounts", statusCounts);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("rooms", roomsView);

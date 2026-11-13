@@ -25,6 +25,7 @@ import java.util.Arrays;
 @Order(1)
 @Transactional
 @RequiredArgsConstructor
+@org.springframework.context.annotation.Profile("!mysql")  // 只在 H2 默认 profile 下执行，MySQL 用 sql/data-mysql.sql 初始化
 public class InnerDataLoader implements CommandLineRunner {
 
     private final TrainingRoomMapper roomMapper;
