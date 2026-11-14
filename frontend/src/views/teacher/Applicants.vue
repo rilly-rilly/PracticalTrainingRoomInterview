@@ -1,10 +1,13 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { teacherApi } from '../../api'
 import FeedbackState from '../../components/FeedbackState.vue'
 import StatusBadge from '../../components/StatusBadge.vue'
 import { formatDateTime } from '../../utils/format'
 import { pushToast } from '../../utils/toast'
+import { matchKeyword, compareByInitial } from '../../utils/pinyin'
+
+const PAGE_SIZE = 15
 
 const tabs = [
   { value: '', label: '全部' },
@@ -27,6 +30,14 @@ const expandedId = ref(null)
 const decidingId = ref(null)
 const decisionErrors = reactive({})
 
+// ---- 新增：筛选 / 搜索 / 排序 / 分页 ----
+const keyword = ref('')
+const majorFilter = ref('')
+const priorityFilter = ref('')
+const sortField = ref('studentNo')   // 'studentNo' | 'name'
+const sortOrder = ref('asc')          // 'asc' | 'desc'
+const currentPage = ref(1)
+
 const totalCount = computed(() =>
   Object.values(statusCounts.value || {}).reduce((sum, n) => sum + n, 0)
 )
@@ -34,6 +45,124 @@ const totalCount = computed(() =>
 function countOf(value) {
   if (!value) return totalCount.value
   return statusCounts.value?.[value] ?? 0
+}
+
+// 可用专业列表（去重）
+const majorOptions = computed(() => {
+  const set = new Set()
+  applications.value.forEach((a) => a.major && set.add(a.major))
+  return [...set].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+})
+
+// 可用意向优先级列表
+const priorityOptions = computed(() => {
+  const set = new Set()
+  applications.value.forEach((a) => {
+    if (a.priority) set.add(a.priority)
+  })
+  return [...set].sort((a, b) => a - b)
+})
+
+// 切换任一筛选条件时回到第一页
+watch(
+  [activeStatus, keyword, majorFilter, priorityFilter, sortField, sortOrder],
+  () => {
+    currentPage.value = 1
+  }
+)
+
+// 过滤 + 排序后的完整列表
+const filteredList = computed(() => {
+  let list = applications.value
+
+  // 1. 状态过滤（虽然 Tab 也会调 load，但保留双保险）
+  if (activeStatus.value) {
+    list = list.filter((a) => a.status === activeStatus.value)
+  }
+
+  // 2. 搜索：姓名 / 学号 / 拼音
+  if (keyword.value) {
+    const kw = keyword.value.trim()
+    list = list.filter((a) => {
+      return (
+        matchKeyword(a.studentName, kw) ||
+        matchKeyword(a.studentNo, kw)
+      )
+    })
+  }
+
+  // 3. 专业筛选
+  if (majorFilter.value) {
+    list = list.filter((a) => a.major === majorFilter.value)
+  }
+
+  // 4. 意向优先级筛选
+  if (priorityFilter.value) {
+    const p = Number(priorityFilter.value)
+    list = list.filter((a) => a.priority === p)
+  }
+
+  // 5. 排序
+  const order = sortOrder.value
+  list = [...list].sort((a, b) => {
+    if (sortField.value === 'name') {
+      return compareByInitial(a, b, (x) => x.studentName, order)
+    }
+    // studentNo
+    let cmp = String(a.studentNo).localeCompare(String(b.studentNo), 'zh-Hans-CN')
+    return order === 'asc' ? cmp : -cmp
+  })
+
+  return list
+})
+
+// 分页切片
+const totalPages = computed(() => {
+  const total = filteredList.value.length
+  if (total === 0) return 0
+  return Math.ceil(total / PAGE_SIZE)
+})
+
+const pagedList = computed(() => {
+  if (totalPages.value === 0) return []
+  const start = (currentPage.value - 1) * PAGE_SIZE
+  return filteredList.value.slice(start, start + PAGE_SIZE)
+})
+
+// 页码范围（当前页前后各 1 页）
+const pageNumbers = computed(() => {
+  const total = totalPages.value
+  const cur = currentPage.value
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1)
+  }
+  const pages = []
+  pages.push(1)
+  if (cur > 3) pages.push('...')
+  for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) {
+    pages.push(i)
+  }
+  if (cur < total - 2) pages.push('...')
+  pages.push(total)
+  return pages
+})
+
+function goPage(p) {
+  if (typeof p === 'number' && p >= 1 && p <= totalPages.value) {
+    currentPage.value = p
+  }
+}
+
+function resetFilters() {
+  keyword.value = ''
+  majorFilter.value = ''
+  priorityFilter.value = ''
+  sortField.value = 'studentNo'
+  sortOrder.value = 'asc'
+  activeStatus.value = ''
+  expandedId.value = null
+  currentPage.value = 1
+  load()
 }
 
 async function load() {
@@ -134,14 +263,92 @@ load()
         </div>
       </div>
 
+      <!-- 工具栏：搜索 / 筛选 / 排序 / 重置 -->
+      <div class="toolbar">
+        <div class="toolbar__left">
+          <div class="toolbar__group">
+            <label class="toolbar__label">排序</label>
+            <select v-model="sortField" class="select select--sm">
+              <option value="studentNo">学号</option>
+              <option value="name">姓名首字母</option>
+            </select>
+            <button
+              type="button"
+              class="btn btn--sm btn--ghost toolbar__order"
+              :title="sortOrder === 'asc' ? '升序' : '降序'"
+              @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'"
+            >
+              <span v-if="sortOrder === 'asc'">↑ 升</span>
+              <span v-else>↓ 降</span>
+            </button>
+          </div>
+
+          <div class="toolbar__divider"></div>
+
+          <div class="toolbar__group">
+            <label class="toolbar__label">专业</label>
+            <select v-model="majorFilter" class="select select--sm">
+              <option value="">全部</option>
+              <option v-for="m in majorOptions" :key="m" :value="m">{{ m }}</option>
+            </select>
+          </div>
+
+          <div class="toolbar__group">
+            <label class="toolbar__label">意向</label>
+            <select v-model="priorityFilter" class="select select--sm">
+              <option value="">全部</option>
+              <option v-for="p in priorityOptions" :key="p" :value="p">第 {{ p }} 志愿</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toolbar__right">
+          <div class="search-wrap">
+            <svg class="search-wrap__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              v-model="keyword"
+              type="text"
+              class="input input--search"
+              placeholder="搜索姓名、学号、拼音（如 zym）"
+            />
+            <button
+              v-if="keyword"
+              type="button"
+              class="search-wrap__clear"
+              title="清空"
+              @click="keyword = ''"
+            >×</button>
+          </div>
+          <button type="button" class="btn btn--sm btn--ghost" @click="resetFilters">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
+            重置
+          </button>
+        </div>
+      </div>
+
       <div class="card">
+        <!-- 加载 / 错误 / 无后端数据 -->
         <FeedbackState
-          v-if="loading || error || applications.length === 0"
+          v-if="loading || error || (applications.length === 0 && !keyword && !majorFilter && !priorityFilter)"
           :loading="loading"
           :error="error"
-          :empty="!loading && !error"
+          :empty="!loading && !error && applications.length === 0"
           empty-text="当前筛选条件下暂无报考学生"
           @retry="load"
+        />
+
+        <!-- 有后端数据但搜索/筛选无匹配 -->
+        <FeedbackState
+          v-else-if="pagedList.length === 0"
+          :loading="false"
+          :empty="true"
+          empty-text="暂无匹配数据，请尝试调整搜索关键词或筛选条件"
         />
 
         <div v-else class="table-wrap">
@@ -158,7 +365,7 @@ load()
               </tr>
             </thead>
             <tbody>
-              <template v-for="item in applications" :key="item.id">
+              <template v-for="item in pagedList" :key="item.id">
                 <tr>
                   <td>
                     <strong>{{ item.studentName }}</strong>
@@ -261,6 +468,33 @@ load()
               </template>
             </tbody>
           </table>
+
+          <!-- 分页：仅当筛选后有数据时显示 -->
+          <div v-if="filteredList.length > PAGE_SIZE" class="pagination">
+            <span class="pagination__total">共 {{ filteredList.length }} 条</span>
+            <button
+              type="button"
+              class="pagination__btn"
+              :disabled="currentPage === 1"
+              @click="goPage(currentPage - 1)"
+            >上一页</button>
+            <template v-for="(p, idx) in pageNumbers" :key="idx">
+              <span v-if="p === '...'" class="pagination__ellipsis">…</span>
+              <button
+                v-else
+                type="button"
+                class="pagination__btn"
+                :class="{ 'is-active': p === currentPage }"
+                @click="goPage(p)"
+              >{{ p }}</button>
+            </template>
+            <button
+              type="button"
+              class="pagination__btn"
+              :disabled="currentPage === totalPages"
+              @click="goPage(currentPage + 1)"
+            >下一页</button>
+          </div>
         </div>
       </div>
     </section>
