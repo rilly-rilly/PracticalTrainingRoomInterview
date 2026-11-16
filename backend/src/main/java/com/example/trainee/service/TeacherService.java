@@ -87,8 +87,13 @@ public class TeacherService {
 
         // 6) 各状态计数
         Map<String, Long> statusCounts = new LinkedHashMap<>();
+        // 注意：必须基于该导师「全部」intentions 统计，不受 statusFilter 影响，
+        // 否则前端切换状态 Tab 后，其他状态及「全部」计数都会被错误地算成 0。
+        List<Intention> allIntentions = statusFilter == null
+                ? intentions
+                : intentionMapper.listByTeacher(teacherId, null);
         for (IntentionStatus s : IntentionStatus.values()) {
-            long cnt = intentions.stream().filter(i -> i.getStatus() == s).count();
+            long cnt = allIntentions.stream().filter(i -> i.getStatus() == s).count();
             statusCounts.put(s.name(), cnt);
         }
 

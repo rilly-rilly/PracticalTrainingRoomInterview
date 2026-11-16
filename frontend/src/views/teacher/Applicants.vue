@@ -104,13 +104,26 @@ const filteredList = computed(() => {
 
   // 5. 排序
   const order = sortOrder.value
+  const dir = order === 'asc' ? 1 : -1
   list = [...list].sort((a, b) => {
     if (sortField.value === 'name') {
       return compareByInitial(a, b, (x) => x.studentName, order)
     }
+    if (sortField.value === 'interviewTotal') {
+      // 未评分排最后（无论升降序）
+      const ta = a.interview?.total
+      const tb = b.interview?.total
+      const aEmpty = ta === null || ta === undefined
+      const bEmpty = tb === null || tb === undefined
+      if (aEmpty && bEmpty) return String(a.studentNo).localeCompare(String(b.studentNo))
+      if (aEmpty) return 1
+      if (bEmpty) return -1
+      if (ta !== tb) return (ta - tb) * dir
+      return String(a.studentNo).localeCompare(String(b.studentNo))
+    }
     // studentNo
     let cmp = String(a.studentNo).localeCompare(String(b.studentNo), 'zh-Hans-CN')
-    return order === 'asc' ? cmp : -cmp
+    return cmp * dir
   })
 
   return list
@@ -271,6 +284,7 @@ load()
             <select v-model="sortField" class="select select--sm">
               <option value="studentNo">学号</option>
               <option value="name">姓名首字母</option>
+              <option value="interviewTotal">面试总分</option>
             </select>
             <button
               type="button"
