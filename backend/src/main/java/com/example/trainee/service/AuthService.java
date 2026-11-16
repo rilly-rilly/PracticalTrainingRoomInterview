@@ -44,63 +44,74 @@ public class AuthService {
     private final UserSessionMapper sessionMapper;
     private final PasswordEncoder encoder;
 
-    /** 登录，返回 { token, role, profile } */
+    /**
+     * 登录，返回 { token, role, profile }。
+     *
+     * 三张表并行匹配，不再靠字符串前缀猜测角色：
+     * - admin 表：username = "admin"
+     * - teacher 表：teacher_no = username
+     * - student 表：student_no = username
+     * 任一张表密码匹配即返回对应角色，避免学生学号如 T2026001 被误判为导师。
+     */
     public Map<String, Object> login(String username, String password) {
         if (username == null || username.isBlank() || password == null || password.isBlank()) {
             throw new BizException(400, "账号或密码不能为空");
         }
 
-        String role;
-        Long userId;
-        String name;
-        Map<String, Object> profile;
-
-        // 1) 路由账号
-        if ("admin".equals(username)) {
-            AdminUser admin = adminUserMapper.findByUsername(username);
-            if (admin == null || !encoder.matches(password, admin.getPasswordHash())) {
-                throw new BizException(401, "账号或密码错误");
-            }
-            role = "admin";
-            userId = admin.getId();
-            name = admin.getName();
-            profile = buildAdminProfile(admin);
-        } else if (username.matches("^(?i)T.*")) {
-            Teacher teacher = teacherMapper.findByNo(username);
-            if (teacher == null || !encoder.matches(password, teacher.getPasswordHash())) {
-                throw new BizException(401, "账号或密码错误");
-            }
-            role = "teacher";
-            userId = teacher.getId();
-            name = teacher.getName();
-            profile = buildTeacherProfile(teacher);
-        } else {
-            Student student = studentMapper.selectOne(
-                    new LambdaQueryWrapper<Student>().eq(Student::getStudentNo, username));
-            if (student == null || !encoder.matches(password, student.getPasswordHash())) {
-                throw new BizException(401, "账号或密码错误");
-            }
-            role = "student";
-            userId = student.getId();
-            name = student.getName();
-            profile = buildStudentProfile(student);
+        // 同时查三张表，密码匹配第一个即返回
+        // admin
+        AdminUser admin = "admin".equals(username) ? adminUserMapper.findByUsername(username) : null;
+        if (admin != null && encoder.matches(password, admin.getPasswordHash())) {
+            return successLogin("admin", admin.getId(), admin.getName(),
+                    adminUserMapper, teacherMapper, studentMapper, username, admin);
         }
 
-        // 2) 生成 token，写 session
+        // teacher
+        Teacher teacher = teacherMapper.findByNo(username);
+        if (teacher != null && encoder.matches(password, teacher.getPasswordHash())) {
+            return successLogin("teacher", teacher.getId(), teacher.getName(),
+                    adminUserMapper, teacherMapper, studentMapper, username, teacher);
+        }
+
+        // student
+        Student student = studentMapper.selectOne(
+                new LambdaQueryWrapper<Student>().eq(Student::getStudentNo, username));
+        if (student != null && encoder.matches(password, student.getPasswordHash())) {
+            return successLogin("student", student.getId(), student.getName(),
+                    adminUserMapper, teacherMapper, studentMapper, username, student);
+        }
+
+        throw new BizException(401, "账号或密码错误");
+    }
+
+    /** 登录成功后共用的 token + session + 返回构建逻辑 */
+    private Map<String, Object> successLogin(
+            String role, Long userId, String name,
+            AdminUserMapper adminUserMapper, TeacherMapper teacherMapper, StudentMapper studentMapper,
+            String username, Object matchedEntity) {
         String token = UUID.randomUUID().toString().replace("-", "");
+        LocalDateTime now = LocalDateTime.now();
         UserSession session = new UserSession();
         session.setToken(token);
         session.setRole(role);
         session.setUserId(userId);
-        session.setCreateTime(LocalDateTime.now());
+        session.setCreateTime(now);
+        // 会话默认 7 天自动过期，过期后拦截器返回 401
+        session.setExpireAt(now.plusDays(7));
         sessionMapper.insert(session);
 
         log.info("用户登录成功: role={}, userId={}, name={}", role, userId, name);
 
-        // 3) 返回
         Map<String, Object> result = new HashMap<>();
         result.put("token", token);
         result.put("role", role);
+
+        Map<String, Object> profile = switch (role) {
+            case "admin" -> buildAdminProfile((AdminUser) matchedEntity);
+            case "teacher" -> buildTeacherProfile((Teacher) matchedEntity);
+            case "student" -> buildStudentProfile((Student) matchedEntity);
+            default -> throw new BizException(500, "未知角色");
+        };
         result.put("profile", profile);
         return result;
     }

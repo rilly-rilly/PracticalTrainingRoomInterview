@@ -39,15 +39,17 @@ public class TeacherService {
         LoginUser user = TokenInterceptor.AuthContext.get();
         Long teacherId = user.getUserId();
 
-        // 1) 报考列表
-        List<Intention> intentions = intentionMapper.listByTeacher(teacherId, statusFilter);
+        // 1) 报考列表（按当前 Tab 的 status 过滤）
+        List<Intention> filtered = intentionMapper.listByTeacher(teacherId, statusFilter);
+        // 2) 全量列表（用于计算各状态计数，不受 statusFilter 影响）
+        List<Intention> all = intentionMapper.listByTeacher(teacherId, null);
 
-        // 2) 装饰
-        List<Map<String, Object>> applications = intentions.stream()
+        // 3) 装饰
+        List<Map<String, Object>> applications = filtered.stream()
                 .map(decorator::decorate)
                 .collect(Collectors.toList());
 
-        // 3) 排序：interview.total 降序，同分时 studentNo 升序
+        // 4) 排序：interview.total 降序，同分时 studentNo 升序
         applications.sort((a, b) -> {
             Object ivA = a.get("interview");
             Object ivB = b.get("interview");
@@ -61,12 +63,12 @@ public class TeacherService {
             return String.valueOf(noA).compareTo(String.valueOf(noB));
         });
 
-        // 4) 当前导师 profile
+        // 5) 当前导师 profile
         Teacher teacher = teacherMapper.selectById(teacherId);
         if (teacher == null) throw new BizException(404, "导师不存在");
         Map<String, Object> teacherProfile = buildTeacherProfile(teacher);
 
-        // 5) 实训室信息
+        // 6) 实训室信息
         Map<String, Object> room = new HashMap<>();
         if (teacher.getRoomId() != null) {
             TrainingRoom trainingRoom = trainingRoomMapper.selectById(teacher.getRoomId());
@@ -85,15 +87,10 @@ public class TeacherService {
             room.put("remaining", 0);
         }
 
-        // 6) 各状态计数
+        // 7) 各状态计数（基于全量 all，而非 filtered）
         Map<String, Long> statusCounts = new LinkedHashMap<>();
-        // 注意：必须基于该导师「全部」intentions 统计，不受 statusFilter 影响，
-        // 否则前端切换状态 Tab 后，其他状态及「全部」计数都会被错误地算成 0。
-        List<Intention> allIntentions = statusFilter == null
-                ? intentions
-                : intentionMapper.listByTeacher(teacherId, null);
         for (IntentionStatus s : IntentionStatus.values()) {
-            long cnt = allIntentions.stream().filter(i -> i.getStatus() == s).count();
+            long cnt = all.stream().filter(i -> i.getStatus() == s).count();
             statusCounts.put(s.name(), cnt);
         }
 
@@ -121,7 +118,7 @@ public class TeacherService {
 
     // ---------- 3. 提交面试 ----------
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> submitInterview(Long intentionId, Integer attitude, Integer logic,
                                                Integer coding, Integer commitment, String comment) {
         Intention it = intentionMapper.selectById(intentionId);
@@ -169,7 +166,7 @@ public class TeacherService {
 
     // ---------- 4. 录取决定 ----------
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> makeDecision(Long intentionId, String decision) {
         if (!"admit".equals(decision) && !"waitlist".equals(decision) && !"reject".equals(decision)) {
             throw new BizException(400, "decision 必须是 admit/waitlist/reject");
@@ -191,12 +188,18 @@ public class TeacherService {
 
         switch (decision) {
             case "admit" -> {
-                TrainingRoom room = trainingRoomMapper.selectById(it.getRoomId());
+                // 先锁 training_room 行，确保并发名额检查是串行的。
+                // 两个导师同时给同一个实训室最后一个名额点「拟录取」时，
+                // 第二个会阻塞在 FOR UPDATE 上，等第一个提交后再跑，
+                // 此时 countOccupied 已反映真实占用数，正确抛出 409。
+                TrainingRoom room = trainingRoomMapper.selectForUpdate(it.getRoomId());
+                if (room == null) throw new BizException(404, "实训室不存在");
+
                 int used = trainingRoomMapper.countOccupied(it.getRoomId());
-                if (room == null || used >= room.getQuota()) {
+                if (used >= room.getQuota()) {
                     Map<String, Object> data = new HashMap<>();
                     data.put("roomId", it.getRoomId());
-                    data.put("quota", room != null ? room.getQuota() : 0);
+                    data.put("quota", room.getQuota());
                     data.put("used", used);
                     throw new BizException(409, "名额已满", data);
                 }

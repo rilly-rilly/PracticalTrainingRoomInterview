@@ -1,0 +1,5 @@
+-- 为 user_session 增加过期时间
+-- 执行环境：MySQL 8.0.28
+ALTER TABLE user_session ADD COLUMN expire_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP;
+UPDATE user_session SET expire_at = DATE_ADD(create_time, INTERVAL 7 DAY);
+ALTER TABLE user_session MODIFY COLUMN expire_at DATETIME NOT NULL DEFAULT (DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 7 DAY));

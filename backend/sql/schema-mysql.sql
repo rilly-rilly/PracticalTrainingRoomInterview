@@ -144,7 +144,8 @@ CREATE TABLE `user_session` (
     `token` VARCHAR(100) NOT NULL UNIQUE,
     `role` VARCHAR(10) NOT NULL,
     `user_id` BIGINT UNSIGNED NOT NULL,
-    `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `expire_at` DATETIME NOT NULL COMMENT '会话过期时间（默认登录后 7 天）'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='登录会话';
 
 CREATE TABLE `schedule_item` (

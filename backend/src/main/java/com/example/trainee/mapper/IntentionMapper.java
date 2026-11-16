@@ -7,6 +7,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
+import java.util.Map;
 
 @Mapper
 public interface IntentionMapper extends BaseMapper<Intention> {
@@ -45,4 +46,22 @@ public interface IntentionMapper extends BaseMapper<Intention> {
             " SELECT student_id FROM intention WHERE status IN ('待面试','面试完成','拟录取','递补','已确认','已录取')" +
             ")")
     List<Long> findAllRejectedStudentIds();
+
+    /**
+     * 按 room_id + status 分组聚合。
+     * 返回每行一个 {roomId, status, cnt}，Service 层归组为 Map<roomId, Map<status, cnt>>。
+     * 用于 admissionsOverview 的 roomsView 聚合，替代 N+1 的 countOccupied + Java stream filter。
+     */
+    @Select("SELECT room_id AS roomId, status, COUNT(*) AS cnt " +
+            "FROM intention WHERE room_id IS NOT NULL " +
+            "GROUP BY room_id, status")
+    List<Map<String, Object>> groupByRoomAndStatus();
+
+    /**
+     * 按 status 全局分组聚合。
+     * 返回每行一个 {status, cnt}。用于 admissionsOverview 的 stats 部分，
+     * 替代 Java 层对全表的 8 次 stream().filter().count()。
+     */
+    @Select("SELECT status, COUNT(*) AS cnt FROM intention GROUP BY status")
+    List<Map<String, Object>> groupByStatus();
 }

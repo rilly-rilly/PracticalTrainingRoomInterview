@@ -128,7 +128,8 @@ CREATE TABLE user_session (
     token        VARCHAR(100) NOT NULL UNIQUE,
     role         VARCHAR(10)  NOT NULL,
     user_id      BIGINT       NOT NULL,
-    create_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    create_time  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expire_at    TIMESTAMP    NOT NULL
 );
 
 CREATE TABLE schedule_item (

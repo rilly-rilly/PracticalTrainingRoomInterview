@@ -168,7 +168,7 @@ async function copyPassword(password) {
       <div>
         <h1>表格导入与账号生成</h1>
         <p class="page-head__sub">
-          学生与导师账号由管理员通过 CSV 表格统一导入创建，系统自动生成初始密码；密码只在本页导入结果中展示一次，数据库中仅保存密码哈希。
+          学生与导师账号由管理员通过 CSV 表格统一导入创建，系统自动生成随机初始密码。<strong>出于安全考虑，API 不再回传初始密码</strong>，请在提交前就确定好密码发放渠道。
         </p>
       </div>
     </div>
@@ -304,12 +304,14 @@ async function copyPassword(password) {
 
         <div v-if="result && accounts.length" class="card">
           <div class="card__head">
-            <h2>生成账号（初始密码仅显示一次）</h2>
+            <h2>生成账号清单</h2>
             <span class="badge badge--admitted">{{ accounts.length }} 个账号</span>
           </div>
           <div class="card__body">
             <div class="hint--box hint--warn">
-              密码只在此处展示一次，请立即复制并通过安全渠道通知本人；数据库中仅保存密码哈希，刷新或离开本页后无法再次查看。
+              <strong>初始密码发放方式</strong>
+              <p>系统已为每个账号生成随机初始密码，但<strong>出于安全考虑，密码不再通过 API 回传</strong>，数据库中仅保存密码哈希。
+              请在提交 Excel 前就确定好密码发放渠道（邮件、离线打印、统一约定），让账号持有人第一时间拿到密码并登录。</p>
             </div>
           </div>
           <div class="table-wrap">
@@ -318,20 +320,14 @@ async function copyPassword(password) {
                 <tr>
                   <th>{{ accountNoLabel }}</th>
                   <th>姓名</th>
-                  <th>初始密码</th>
                   <th v-if="type === 'teacher'">实训室</th>
-                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="account in accounts" :key="account.no">
                   <td class="mono">{{ account.no }}</td>
                   <td><strong>{{ account.name }}</strong></td>
-                  <td><span class="copy-pwd">{{ account.password }}</span></td>
                   <td v-if="type === 'teacher'">{{ account.roomName || '—' }}</td>
-                  <td>
-                    <button class="btn btn--ghost btn--sm" type="button" @click="copyPassword(account.password)">复制</button>
-                  </td>
                 </tr>
               </tbody>
             </table>

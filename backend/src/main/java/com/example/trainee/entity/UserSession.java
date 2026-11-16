@@ -16,4 +16,6 @@ public class UserSession {
     private String role;
     private Long userId;
     private LocalDateTime createTime;
+    /** 会话过期时间（默认登录后 7 天），拦截器 preHandle 里会校验 */
+    private LocalDateTime expireAt;
 }

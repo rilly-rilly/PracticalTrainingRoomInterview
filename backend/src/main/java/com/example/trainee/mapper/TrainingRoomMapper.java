@@ -22,4 +22,13 @@ public interface TrainingRoomMapper extends BaseMapper<TrainingRoom> {
     @Select("SELECT COUNT(*) FROM intention " +
             "WHERE room_id = #{roomId} AND status IN ('拟录取','已确认','已录取')")
     int countOccupied(Long roomId);
+
+    /**
+     * 行锁查询，用于事务内抢名额。
+     * 两个并发请求同时给同一实训室最后一个名额点「拟录取」时，
+     * 第二个会阻塞在 FOR UPDATE 上，等第一个提交后再执行，
+     * 此时 countOccupied 已反映真实数量，第二个就能正确抛 409。
+     */
+    @Select("SELECT * FROM training_room WHERE id = #{id} FOR UPDATE")
+    TrainingRoom selectForUpdate(Long id);
 }

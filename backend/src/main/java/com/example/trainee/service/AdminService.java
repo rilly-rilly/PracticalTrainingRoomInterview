@@ -203,8 +203,10 @@ public class AdminService {
                 continue;
             }
 
-            // 入库
-            String password;
+            // 入库。密码只在本方法内生成（encoder.encode 后不再保留明文），
+            // 不写入返回体——明文字段一旦出现在响应里，前端任何一次 console.log 或
+            // localStorage 持久化都会造成大规模账号泄漏风险。
+            // 管理员应在 Excel 文件提交前就确定好初始密码发放渠道（邮件/离线打印）。
             switch (type) {
                 case "student" -> {
                     Student s = new Student();
@@ -212,15 +214,15 @@ public class AdminService {
                     s.setName(name);
                     s.setMajor(row.getOrDefault("专业", "").trim());
                     s.setGrade(row.getOrDefault("年级", "").trim());
-                    password = "Stu@" + randomHex(6);
-                    s.setPasswordHash(encoder.encode(password));
+                    String initialPwd = "Stu@" + randomHex(6);
+                    s.setPasswordHash(encoder.encode(initialPwd));
                     s.setCreateTime(now());
                     studentMapper.insert(s);
 
                     Map<String, Object> a = new LinkedHashMap<>();
                     a.put("no", no);
                     a.put("name", name);
-                    a.put("password", password);
+                    // 初始密码通过离线渠道单独发放（邮件/打印件），API 不返回明文
                     accounts.add(a);
                 }
                 case "teacher" -> {
@@ -231,8 +233,8 @@ public class AdminService {
                     String roomCode = row.getOrDefault("实训室编号", "").trim();
                     TrainingRoom room = trainingRoomMapper.findByCode(roomCode);
                     t.setRoomId(room != null ? room.getId() : null);
-                    password = "Teach@" + randomHex(6);
-                    t.setPasswordHash(encoder.encode(password));
+                    String initialPwd = "Teach@" + randomHex(6);
+                    t.setPasswordHash(encoder.encode(initialPwd));
                     t.setCreateTime(now());
                     t.setUpdateTime(now());
                     teacherMapper.insert(t);
@@ -240,7 +242,6 @@ public class AdminService {
                     Map<String, Object> a = new LinkedHashMap<>();
                     a.put("no", no);
                     a.put("name", name);
-                    a.put("password", password);
                     a.put("roomName", room != null ? room.getName() : null);
                     accounts.add(a);
                 }
@@ -440,40 +441,54 @@ public class AdminService {
     // ================================================================
 
     public Map<String, Object> admissionsOverview() {
-        // 一次查出全部数据，后续在内存里聚合
+        // 1) 轻量基础数据（teacherMapper/studentMapper 的 selectList 数量级都 < 50，可接受）
         List<TrainingRoom> rooms = trainingRoomMapper.selectList(null);
         List<Teacher> teachers = teacherMapper.selectList(null);
-        // 构建 roomId -> name 映射，供 teachers 联查
         Map<Long, String> roomNameMap = rooms.stream()
                 .collect(Collectors.toMap(TrainingRoom::getId, TrainingRoom::getName, (a, b) -> a));
 
-        List<Intention> allIntentions = intentionMapper.selectList(null);
-        // 按 roomId 分组
-        Map<Long, List<Intention>> byRoom = allIntentions.stream()
-                .collect(Collectors.groupingBy(Intention::getRoomId));
-        // 按 teacherId 分组
-        Map<Long, List<Intention>> byTeacher = allIntentions.stream()
-                .collect(Collectors.groupingBy(Intention::getTeacherId));
+        // 2) SQL GROUP BY 一次查出所有实训室 × 状态的计数，替代 roomsView 里的 N+1 countOccupied
+        //    和 Java stream 对全表的 groupBy + filter + count
+        List<Map<String, Object>> roomStatusRows = intentionMapper.groupByRoomAndStatus();
+        Map<Long, Map<String, Long>> roomStatusMap = new LinkedHashMap<>();
+        for (Map<String, Object> row : roomStatusRows) {
+            Long roomId = ((Number) row.get("roomId")).longValue();
+            String status = (String) row.get("status");
+            Long cnt = ((Number) row.get("cnt")).longValue();
+            roomStatusMap.computeIfAbsent(roomId, k -> new LinkedHashMap<>()).merge(status, cnt, Long::sum);
+        }
+
+        // 3) SQL GROUP BY 按 status 全局聚合，替代 Java 对 allIntentions 的 8 次 stream.filter().count()
+        List<Map<String, Object>> statusRows = intentionMapper.groupByStatus();
+        Map<String, Long> globalStatusCounts = new LinkedHashMap<>();
+        long intentionsTotal = 0;
+        for (Map<String, Object> row : statusRows) {
+            String status = (String) row.get("status");
+            Long cnt = ((Number) row.get("cnt")).longValue();
+            globalStatusCounts.merge(status, cnt, Long::sum);
+            intentionsTotal += cnt;
+        }
 
         // -------- rooms --------
         List<Map<String, Object>> roomsView = rooms.stream().map(room -> {
-            List<Intention> list = byRoom.getOrDefault(room.getId(), Collections.emptyList());
-            long admitted = list.stream().filter(i -> i.getStatus() == IntentionStatus.拟录取).count();
-            long confirmed = list.stream().filter(i -> i.getStatus() == IntentionStatus.已确认).count();
-            long waitlist = list.stream().filter(i -> i.getStatus() == IntentionStatus.递补).count();
-            long enrolled = list.stream().filter(i -> i.getStatus() == IntentionStatus.已录取).count();
-            int used = trainingRoomMapper.countOccupied(room.getId());
+            Map<String, Long> sc = roomStatusMap.getOrDefault(room.getId(), Map.of());
+            long admitted  = sc.getOrDefault(IntentionStatus.拟录取.name(), 0L);
+            long confirmed = sc.getOrDefault(IntentionStatus.已确认.name(), 0L);
+            long waitlist  = sc.getOrDefault(IntentionStatus.递补.name(), 0L);
+            long enrolled  = sc.getOrDefault(IntentionStatus.已录取.name(), 0L);
+            // occupied = 拟录取 + 已确认 + 已录取，与 TrainingRoomMapper.countOccupied 一致
+            long occupied = admitted + confirmed + enrolled;
 
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", room.getId());
             m.put("name", room.getName());
-            m.put("code", room.getRoomCode());           // mock 用 code
-            m.put("roomCode", room.getRoomCode());       // 兼容已有的 roomCode 引用
+            m.put("code", room.getRoomCode());
+            m.put("roomCode", room.getRoomCode());
             m.put("direction", room.getDirection());
             m.put("quota", room.getQuota());
-            m.put("used", used);                         // mock 用 used
-            m.put("countOccupied", used);                // 兼容
-            m.put("remaining", Math.max(0, room.getQuota() - used)); // mock 有 remaining
+            m.put("used", occupied);
+            m.put("countOccupied", occupied);
+            m.put("remaining", Math.max(0, room.getQuota() - occupied));
             m.put("admitted", admitted);
             m.put("confirmed", confirmed);
             m.put("waitlist", waitlist);
@@ -482,6 +497,10 @@ public class AdminService {
         }).collect(Collectors.toList());
 
         // -------- teachers --------
+        // teachersView 里也用到了 allIntentions 按 teacherId 分组，这里继续用内存（teacher 数量 < 50）
+        List<Intention> allIntentions = intentionMapper.selectList(null);
+        Map<Long, List<Intention>> byTeacher = allIntentions.stream()
+                .collect(Collectors.groupingBy(Intention::getTeacherId));
         List<Map<String, Object>> teachersView = teachers.stream().map(t -> {
             List<Intention> list = byTeacher.getOrDefault(t.getId(), Collections.emptyList());
             long applied = list.size();
@@ -499,7 +518,7 @@ public class AdminService {
             m.put("name", t.getName());
             m.put("title", t.getTitle());
             m.put("roomId", t.getRoomId());
-            m.put("roomName", roomName);                  // mock 有 roomName
+            m.put("roomName", roomName);
             m.put("applied", applied);
             m.put("admitted", admitted);
             m.put("waitlist", waitlist);
@@ -511,32 +530,28 @@ public class AdminService {
                 .map(decorator::decorate)
                 .collect(Collectors.toList());
 
-        // -------- stats：扁平字段 + 保留 statusCounts --------
+        // -------- stats：直接用 SQL GROUP BY 结果 --------
         long studentsTotal = studentMapper.selectCount(null);
         long teachersTotal = teacherMapper.selectCount(null);
-        long intentionsTotal = allIntentions.size();
 
-        long pending = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.待面试).count();
-        long scored  = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.面试完成).count();
-        long admittedFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.拟录取).count();
-        long waitlistFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.递补).count();
-        long confirmedFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.已确认).count();
-        long enrolledFlat = allIntentions.stream().filter(i -> i.getStatus() == IntentionStatus.已录取).count();
-        long rejected = allIntentions.stream().filter(i ->
-                i.getStatus() == IntentionStatus.未录取 || i.getStatus() == IntentionStatus.已放弃).count();
+        long pending = globalStatusCounts.getOrDefault(IntentionStatus.待面试.name(), 0L);
+        long scored  = globalStatusCounts.getOrDefault(IntentionStatus.面试完成.name(), 0L);
+        long admittedFlat = globalStatusCounts.getOrDefault(IntentionStatus.拟录取.name(), 0L);
+        long waitlistFlat = globalStatusCounts.getOrDefault(IntentionStatus.递补.name(), 0L);
+        long confirmedFlat = globalStatusCounts.getOrDefault(IntentionStatus.已确认.name(), 0L);
+        long enrolledFlat = globalStatusCounts.getOrDefault(IntentionStatus.已录取.name(), 0L);
+        long rejected = globalStatusCounts.getOrDefault(IntentionStatus.未录取.name(), 0L)
+                + globalStatusCounts.getOrDefault(IntentionStatus.已放弃.name(), 0L);
 
-        // 保留 statusCounts（中文 key）给可能的其他消费者
-        Map<String, Long> statusCounts = new LinkedHashMap<>();
+        Map<String, Object> statusCounts = new LinkedHashMap<>();
         for (IntentionStatus s : IntentionStatus.values()) {
-            long cnt = allIntentions.stream().filter(i -> i.getStatus() == s).count();
-            statusCounts.put(s.name(), cnt);
+            statusCounts.put(s.name(), globalStatusCounts.getOrDefault(s.name(), 0L));
         }
 
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("students", studentsTotal);
         stats.put("teachers", teachersTotal);
         stats.put("intentions", intentionsTotal);
-        // 前端 Admissions.vue statItems 直接取这些扁平字段
         stats.put("pending", pending);
         stats.put("scored", scored);
         stats.put("admitted", admittedFlat);
@@ -544,7 +559,7 @@ public class AdminService {
         stats.put("confirmed", confirmedFlat);
         stats.put("enrolled", enrolledFlat);
         stats.put("rejected", rejected);
-        stats.put("statusCounts", statusCounts);  // 兼容保留
+        stats.put("statusCounts", statusCounts);
 
         // -------- confirm window --------
         Map<String, Object> confirmWindow = windowOf("confirm");
@@ -665,7 +680,8 @@ public class AdminService {
         Set<Long> affectedStudents = new HashSet<>();
 
         for (Long roomId : affectedRooms) {
-            TrainingRoom room = trainingRoomMapper.selectById(roomId);
+            // 行锁：两个管理员同时跑补录时，同一实训室串行抢名额。
+            TrainingRoom room = trainingRoomMapper.selectForUpdate(roomId);
             if (room == null) continue;
             while (trainingRoomMapper.countOccupied(roomId) < room.getQuota()) {
                 Intention wait = intentionMapper.findNextWaitlist(roomId);
@@ -833,6 +849,9 @@ public class AdminService {
             case supplement -> {
                 List<TrainingRoom> rooms = trainingRoomMapper.selectList(null);
                 for (TrainingRoom room : rooms) {
+                    // 行锁：管理员补录 + 导师拟录取可能同时操作同一实训室名额。
+                    TrainingRoom locked = trainingRoomMapper.selectForUpdate(room.getId());
+                    if (locked == null) continue;
                     while (trainingRoomMapper.countOccupied(room.getId()) < room.getQuota()) {
                         Intention wait = intentionMapper.findNextWaitlist(room.getId());
                         if (wait == null) break;
@@ -903,9 +922,20 @@ public class AdminService {
                 Set<Long> innerDone = existingInner.stream()
                         .map(AdjustmentRecord::getStudentId).collect(Collectors.toSet());
 
+                // 一次性把 room / teacher / student 全捞进 Map，避免 for 循环里 N+1 查询
                 List<Student> allStudents = studentMapper.selectList(null);
                 Map<Long, Student> studentMap = allStudents.stream()
                         .collect(Collectors.toMap(Student::getId, s -> s));
+                List<TrainingRoom> allRooms = trainingRoomMapper.selectList(null);
+                Map<Long, TrainingRoom> roomMap = allRooms.stream()
+                        .collect(Collectors.toMap(TrainingRoom::getId, r -> r));
+                List<Teacher> allTeachers = teacherMapper.selectList(null);
+                Map<Long, Teacher> teacherMap = allTeachers.stream()
+                        .collect(Collectors.toMap(Teacher::getId, t -> t));
+                // 额外：按 roomId 分组，inner 里找某 room 下所有导师会用到
+                Map<Long, List<Teacher>> teachersByRoom = allTeachers.stream()
+                        .filter(t -> t.getRoomId() != null)
+                        .collect(Collectors.groupingBy(Teacher::getRoomId));
 
                 for (Long sid : allRejectedIds) {
                     if (innerDone.contains(sid)) continue;
@@ -925,12 +955,12 @@ public class AdminService {
                     Long foundRoomId = null;
                     Teacher foundTeacher = null;
                     for (Long rid : originalRoomIds) {
-                        TrainingRoom curRoom = trainingRoomMapper.selectById(rid);
+                        // 从预加载 Map 拿 TrainingRoom，不再 selectById
+                        TrainingRoom curRoom = roomMap.get(rid);
                         if (curRoom == null) continue;
                         if (trainingRoomMapper.countOccupied(rid) < curRoom.getQuota()) {
-                            // 找这个 room 下可用的导师（没有 studentId=sid 的意向）
-                            List<Teacher> roomTeachers = teacherMapper.selectList(
-                                    new LambdaQueryWrapper<Teacher>().eq(Teacher::getRoomId, rid));
+                            // 从预加载 Map 按 roomId 拿导师列表，不再 selectList
+                            List<Teacher> roomTeachers = teachersByRoom.getOrDefault(rid, List.of());
                             for (Teacher t : roomTeachers) {
                                 boolean alreadyChosen = mine.stream()
                                         .anyMatch(i -> t.getId().equals(i.getTeacherId()));
@@ -944,6 +974,16 @@ public class AdminService {
                         }
                     }
 
+                    // 行锁 + 重查：防止挑中后到 insert 之间名额被并发占用
+                    if (foundRoomId != null) {
+                        TrainingRoom lockedRoom = trainingRoomMapper.selectForUpdate(foundRoomId);
+                        if (lockedRoom == null
+                                || trainingRoomMapper.countOccupied(foundRoomId) >= lockedRoom.getQuota()) {
+                            foundRoomId = null;
+                            foundTeacher = null;
+                        }
+                    }
+
                     if (foundRoomId == null || foundTeacher == null) {
                         Map<String, Object> sk = new LinkedHashMap<>();
                         sk.put("studentId", sid);
@@ -953,7 +993,8 @@ public class AdminService {
                         continue;
                     }
 
-                    TrainingRoom room = trainingRoomMapper.selectById(foundRoomId);
+                    // insert 前从预加载 Map 拿 roomName，不再 selectById
+                    TrainingRoom room = roomMap.get(foundRoomId);
 
                     // 新建意向 round=2, priority=0
                     Intention ni = new Intention();
@@ -1003,12 +1044,17 @@ public class AdminService {
                 Set<Long> globalDone = existingGlobal.stream()
                         .map(AdjustmentRecord::getStudentId).collect(Collectors.toSet());
 
+                // 一次性预加载，避免 for 循环里全量 stream
                 List<Student> allStudents = studentMapper.selectList(null);
                 Map<Long, Student> studentMap = allStudents.stream()
                         .collect(Collectors.toMap(Student::getId, s -> s));
-
-                List<Teacher> allTeachers = teacherMapper.selectList(null);
                 List<TrainingRoom> allRooms = trainingRoomMapper.selectList(null);
+                Map<Long, TrainingRoom> roomMap = allRooms.stream()
+                        .collect(Collectors.toMap(TrainingRoom::getId, r -> r));
+                List<Teacher> allTeachers = teacherMapper.selectList(null);
+                Map<Long, List<Teacher>> teachersByRoom = allTeachers.stream()
+                        .filter(t -> t.getRoomId() != null)
+                        .collect(Collectors.groupingBy(Teacher::getRoomId));
 
                 for (Long sid : allRejectedIds) {
                     if (globalDone.contains(sid)) continue;
@@ -1030,9 +1076,8 @@ public class AdminService {
                     for (TrainingRoom room : allRooms) {
                         if (originalRoomIds.contains(room.getId())) continue;
                         if (trainingRoomMapper.countOccupied(room.getId()) >= room.getQuota()) continue;
-                        // 在这个 room 里找一个导师，student 没有选过
-                        List<Teacher> roomTeachers = allTeachers.stream()
-                                .filter(t -> room.getId().equals(t.getRoomId())).toList();
+                        // 从预加载 Map 按 roomId 拿导师列表，避免循环内全量 stream
+                        List<Teacher> roomTeachers = teachersByRoom.getOrDefault(room.getId(), List.of());
                         for (Teacher t : roomTeachers) {
                             boolean alreadyChosen = mine.stream()
                                     .anyMatch(i -> t.getId().equals(i.getTeacherId()));
@@ -1045,6 +1090,16 @@ public class AdminService {
                         if (foundTeacher != null) break;
                     }
 
+                    // 行锁 + 重查：防止挑中后到 insert 之间名额被并发占用
+                    if (foundRoomId != null) {
+                        TrainingRoom lockedRoom = trainingRoomMapper.selectForUpdate(foundRoomId);
+                        if (lockedRoom == null
+                                || trainingRoomMapper.countOccupied(foundRoomId) >= lockedRoom.getQuota()) {
+                            foundRoomId = null;
+                            foundTeacher = null;
+                        }
+                    }
+
                     if (foundRoomId == null || foundTeacher == null) {
                         Map<String, Object> sk = new LinkedHashMap<>();
                         sk.put("studentId", sid);
@@ -1054,7 +1109,8 @@ public class AdminService {
                         continue;
                     }
 
-                    TrainingRoom room = trainingRoomMapper.selectById(foundRoomId);
+                    // insert 前从预加载 Map 拿 roomName，不再 selectById
+                    TrainingRoom room = roomMap.get(foundRoomId);
 
                     Intention ni = new Intention();
                     ni.setStudentId(sid);
